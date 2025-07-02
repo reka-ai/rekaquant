@@ -1,0 +1,193 @@
+From e8e04c43709a5943b6b54fe7d0d044d7e29fcdef Mon Sep 17 00:00:00 2001
+From: Aitor <aitor@reka.ai>
+Date: Sat, 24 May 2025 11:35:16 +0000
+Subject: [PATCH] Load from RekaQuant binarized quants
+
+---
+ include/llama.h             |   1 +
+ src/llama-quant.cpp         | 106 ++++++++++++++++++++++++++++++++++--
+ tools/quantize/quantize.cpp |   7 +++
+ 3 files changed, 109 insertions(+), 5 deletions(-)
+
+diff --git a/include/llama.h b/include/llama.h
+index 52cd7a5a..b119b5c0 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -382,6 +382,7 @@ extern "C" {
+         void * imatrix;                       // pointer to importance matrix data
+         void * kv_overrides;                  // pointer to vector containing overrides
+         void * tensor_types;                  // pointer to vector containing tensor types
++        char * quant_states_path;   
+     } llama_model_quantize_params;
+ 
+     typedef struct llama_logit_bias {
+diff --git a/src/llama-quant.cpp b/src/llama-quant.cpp
+index 159b1307..ae526d64 100644
+--- a/src/llama-quant.cpp
++++ b/src/llama-quant.cpp
+@@ -13,6 +13,8 @@
+ #include <regex>
+ #include <thread>
+ #include <unordered_map>
++#include <filesystem>
++#include <cassert>
+ 
+ // Quantization types. Changes to this struct must be replicated in quantize.cpp
+ struct tensor_quantization {
+@@ -416,14 +418,98 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
+     return new_type;
+ }
+ 
+-static size_t llama_tensor_quantize_impl(enum ggml_type new_type, const float * f32_data, void * new_data, const int64_t chunk_size, int64_t nrows, int64_t n_per_row, const float * imatrix, std::vector<std::thread> & workers, const int nthread) {
++static size_t ggml_read_quant_tensor_from_file(void * new_data, const char * filename) {
++
++    FILE *file = NULL;
++    uint64_t num_bytes = 0;   
++    size_t items_read = 0;
++
++    file = fopen(filename, "rb"); // "rb" = read binary
++    if (!file) {
++        LLAMA_LOG_ERROR("Error opening file: %s", filename);
++        return 1;
++    }
++    LLAMA_LOG_INFO("Opened file: %s\n", filename);
++
++    // 2. Read the size header (first 8 bytes)
++    items_read = fread(&num_bytes, sizeof(uint64_t), 1, file);
++    if (items_read != 1) {
++        if (feof(file)) {
++            fprintf(stderr, "Error: Premature end of file while reading size header.\n");
++        } else {
++            perror("Error reading size header from file");
++        }
++        fclose(file);
++        return 1;
++    }
++    printf("Read size header: %llu bytes expected for data.\n", (unsigned long long)num_bytes);
++
++    if (num_bytes == 0) {
++        LLAMA_LOG_INFO("Data size is 0. No data to read.\n");
++        fclose(file);
++        size_t new_size = 0;
++        return new_size;
++    }
++    
++    printf("Going to read  %llu bytes into data buffer at address %p.\n", (unsigned long long)num_bytes, new_data);
++
++    // 4. Read the raw byte data into the allocated buffer
++    items_read = fread(new_data, 1, num_bytes, file); // Read num_bytes items of size 1 byte
++    if (items_read != num_bytes) {
++        LLAMA_LOG_ERROR("Error: Expected to read %llu bytes, but actually read %zu bytes.\n",
++                (unsigned long long)num_bytes, items_read);
++         if (feof(file)) {
++            LLAMA_LOG_ERROR("Reason: Premature end of file.\n");
++        } else if (ferror(file)) {
++            LLAMA_LOG_ERROR("Reason: File read error");
++        }
++        fclose(file);
++        return 1;
++    }
++    LLAMA_LOG_INFO("Successfully read %zu bytes of data into the buffer.\n", items_read);
++
++    fclose(file);
++
++    return items_read;
++
++}
++
++static size_t llama_tensor_quantize_impl(enum ggml_type new_type, const float * f32_data, void * new_data, const int64_t chunk_size, int64_t nrows, int64_t n_per_row, const char* quant_states_path, const float * imatrix, std::vector<std::thread> & workers, const int nthread){
++    LLAMA_LOG_INFO("Quantizing tensor with type %s", ggml_type_name(new_type));
++    if (quant_states_path != nullptr) {
++        LLAMA_LOG_INFO("Using quant states path %s", quant_states_path);
++        assert(nthread==1);
++    }else{
++        LLAMA_LOG_INFO("No quant states path provided");
++    }
+     if (nthread < 2) {
+         // single-thread
+-        size_t new_size = ggml_quantize_chunk(new_type, f32_data, new_data, 0, nrows, n_per_row, imatrix);
+-        if (!ggml_validate_row_data(new_type, new_data, new_size)) {
++        if (quant_states_path == nullptr) {
++            size_t new_size = ggml_quantize_chunk(new_type, f32_data, new_data, 0, nrows, n_per_row, imatrix);
++
++            if (!ggml_validate_row_data(new_type, new_data, new_size)) {
+             throw std::runtime_error("quantized data validation failed");
++            }
++            return new_size;
++        }
++        else {
++
++            const char * filename_c_str = quant_states_path;
++
++            LLAMA_LOG_INFO("Attempting to read quantized tensor for type %s from %s", ggml_type_name(new_type), filename_c_str);
++            //Make sure file exists 
++            if (!std::filesystem::exists(filename_c_str)) {
++                throw std::runtime_error("Quantized tensor file does not exist");
++            }
++
++            size_t new_size = ggml_read_quant_tensor_from_file(new_data, filename_c_str);
++            
++            if (!ggml_validate_row_data(new_type, new_data, new_size)) {
++                throw std::runtime_error("quantized data validation failed");
++            }
++            return new_size;
++            
+         }
+-        return new_size;
+     }
+ 
+     std::mutex mutex;
+@@ -901,7 +987,16 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
+                 void * new_data_03 = (char *)new_data + ggml_row_size(new_type, n_per_row) * i03 * nrows;
+                 const float * imatrix_03 = imatrix ? imatrix + i03 * n_per_row : nullptr;
+ 
+-                new_size += llama_tensor_quantize_impl(new_type, f32_data_03, new_data_03, chunk_size, nrows, n_per_row, imatrix_03, workers, nthread_use);
++                char * quant_states_path = nullptr;
++                if (params->quant_states_path) {
++                    // Create new path as {quant_states_path}/{name}.bin
++                    char * new_path = (char *)malloc(strlen(params->quant_states_path) + strlen(tensor->name) + 10);
++                    sprintf(new_path, "%s/%s.bin", params->quant_states_path, tensor->name);
++                    quant_states_path = new_path;
++                    LLAMA_LOG_INFO("Quantization states path: %s\n", quant_states_path);
++                }
++
++                new_size += llama_tensor_quantize_impl(new_type, f32_data_03, new_data_03, chunk_size, nrows, n_per_row, quant_states_path, imatrix_03, workers, nthread_use);
+             }
+             LLAMA_LOG_INFO("size = %8.2f MiB -> %8.2f MiB\n", ggml_nbytes(tensor)/1024.0/1024.0, new_size/1024.0/1024.0);
+         }
+@@ -946,6 +1041,7 @@ llama_model_quantize_params llama_model_quantize_default_params() {
+         /*.imatrix                     =*/ nullptr,
+         /*.kv_overrides                =*/ nullptr,
+         /*.tensor_type                 =*/ nullptr,
++        /*.quant_states_path           =*/ nullptr,
+     };
+ 
+     return result;
+diff --git a/tools/quantize/quantize.cpp b/tools/quantize/quantize.cpp
+index 3f54af7c..a56e427b 100644
+--- a/tools/quantize/quantize.cpp
++++ b/tools/quantize/quantize.cpp
+@@ -120,6 +120,7 @@ static void usage(const char * executable) {
+     printf("  --imatrix file_name: use data in file_name as importance matrix for quant optimizations\n");
+     printf("  --include-weights tensor_name: use importance matrix for this/these tensor(s)\n");
+     printf("  --exclude-weights tensor_name: use importance matrix for this/these tensor(s)\n");
++    printf("  --quant_states_path path: use quant states in path when possible\n");
+     printf("  --output-tensor-type ggml_type: use this ggml_type for the output.weight tensor\n");
+     printf("  --token-embedding-type ggml_type: use this ggml_type for the token embeddings tensor\n");
+     printf("  --tensor-type TENSOR=TYPE: quantize this tensor to this ggml_type. example: --tensor-type attn_q=q8_0\n");
+@@ -350,6 +351,12 @@ int main(int argc, char ** argv) {
+             } else {
+                 usage(argv[0]);
+             }
++        } else if (strcmp(argv[arg_idx], "--quant_states_path") == 0) {
++            if (arg_idx < argc-1) {
++                params.quant_states_path = argv[++arg_idx];
++            } else {
++                usage(argv[0]);
++            }
+         } else if (strcmp(argv[arg_idx], "--keep-split") == 0) {
+             params.keep_split = true;
+         } else {
+-- 
+2.34.1
+

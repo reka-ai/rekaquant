@@ -1,0 +1,34 @@
+[tool.poetry]
+name = "RekaQuant"
+version = "0.1.0"
+description = ""
+authors = ["Aitor <aitor@reka.ai>"]
+package-mode = false
+
+
+[tool.poetry.dependencies]
+tensorboard = "^2.0"
+transformers= "4.51.3"
+python = ">=3.10.0,<4.0"
+bitsandbytes = "0.43.3"
+datasets = "2.20.0"
+tokenizers = "0.21"
+torch = "2.6.0"
+tqdm = "^4.0"
+cffi = { git = "https://github.com/python-cffi/cffi.git", rev = "4ea20fd109314971cde77125acb6d809acc0c48f" }
+mypy = "^1.15.0"
+click = "^8.2.1"
+sentencepiece = "^0.2.0"
+gguf = "^0.16.3"
+accelerate = "^1.7.0"
+
+
+[[tool.poetry.source]]
+name = "pytorch-nightly"
+url = "https://download.pytorch.org/whl/nightly/cu121"
+priority = "explicit"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
