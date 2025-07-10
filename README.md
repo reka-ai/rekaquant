@@ -1,5 +1,5 @@
 # Reka Quant
-[Reka Quant](https://link_to_blogpost) is a model quantization library. It supports:
+[Reka Quant](https://reka.ai/news/reka-quantization-technology) is a model quantization library. It supports:
  - NF4 and  GGML (llama.cpp) quantization primitives.  GGML primitives are added directly from its source code through python cffi bindings, making it easy to incorporate new ones.
  - Exporting of GGML quantized models to native GGUF format, for easy integration with the existing ecosystem.
  - Activation-aware quantization by leveraging precomputed activation statistics from a text sample, through the LDLQ method from [QuIP](https://arxiv.org/pdf/2307.13304).
